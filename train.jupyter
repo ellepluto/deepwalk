@@ -1,0 +1,101 @@
+import pyspark 
+from pyspark.sql import SparkSession
+from pyspark.sql import Row
+from os.path import join, abspath
+import networkx as nx
+import random
+from tqdm import tqdm
+
+from math import radians, cos, sin, asin, sqrt, pi, fabs
+
+# 计算两个经纬度间的球面距离
+def get_distance(lng1, lat1, lng2, lat2):
+    if not lng1 or not lat1 or not lng2 or not lat2 or lng1 <= 0.0 or lat1 <= 0.0 or lng2 <= 0.0 or lat2 <= 0.0:
+        return 0.0
+    
+    lng1, lat1, lng2, lat2 = map(radians, [lng1, lat1, lng2, lat2])
+    dlon = lng2 - lng1
+    dlat = lat2 - lat1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    dis = 2 * asin(sqrt(a)) * 6378.137 * 1000
+    return dis
+    
+    
+    
+spark = SparkSession \
+    .builder \
+    .appName("Python Spark SQL Hive integration example") \
+    .getOrCreate()
+    
+# Queries are expressed in HiveQL
+df_sql = spark.sql('SELECT * FROM  limit 1000')
+df_sql.head(1)
+df_sql.type
+
+
+
+df_pd= df_sql.toPandas()
+df_pd['distance']=0.0
+for i in range(df_pd.shape[0]):
+    df_pd.loc[i,'distance']=get_distance(df_pd.iloc[i]['lon'],df_pd.iloc[i]['lat'],df_pd.iloc[i]['trace_lon'],df_pd.iloc[i]['trace_lat'])
+df_pd['distance']
+df_pd=df_pd[['user_id','poiid']]
+df_pd['weight']=1
+df_pd['poiid'].fillna(0,inplace=True)
+
+df_pd=df_pd.drop(index=(df_pd.loc[df_pd['poiid']==0]).index)
+df_pd
+# construct an undirected graph
+G=nx.from_pandas_edgelist(df_pd, "user_id", "poiid", edge_attr=True, create_using=nx.Graph())
+nx.draw(G,node_size = 30)
+len(G)
+
+
+# function to generate random walk sequences of nodes
+def get_randomwalk(node, path_length):
+    
+    random_walk = [node]
+    
+    for i in range(path_length-1):
+        temp = list(G.neighbors(node))
+        temp = list(set(temp) - set(random_walk))    
+        if len(temp) == 0:
+            break
+
+        random_node = random.choice(temp)
+        random_walk.append(random_node)
+        node = random_node
+        
+    return random_walk
+    
+    
+    
+    
+all_nodes = list(G.nodes())
+all_nodes
+random_walks = []
+
+for n in tqdm(all_nodes):
+    for i in range(5):
+        random_walks.append(get_randomwalk(n,3))
+        
+        
+        
+        
+from gensim.models import Word2Vec
+
+import warnings
+warnings.filterwarnings('ignore')
+
+
+
+# train word2vec model
+model = Word2Vec(window = 4, sg = 1, hs = 0,
+                 negative = 10, # for negative sampling
+                 alpha=0.03, min_alpha=0.0007,
+                 seed = 14)
+
+model.build_vocab(random_walks, progress_per=2)
+
+
+model.train(random_walks, total_examples = model.corpus_count, epochs=20, report_delay=1)
